@@ -22,18 +22,18 @@ export default (new Resolver({
       extensions:
         dependency.specifierType === 'commonjs' ||
         dependency.specifierType === 'esm'
-          ? ['ts', 'tsx', 'js', 'jsx', 'json']
+          ? ['ts', 'tsx', 'mjs', 'js', 'jsx', 'cjs', 'json']
           : [],
       mainFields: ['source', 'browser', 'module', 'main'],
-      packageManager: options.shouldAutoInstall
-        ? options.packageManager
-        : undefined,
+      packageManager: options.packageManager,
+      shouldAutoInstall: options.shouldAutoInstall,
       logger,
     });
 
     return resolver.resolve({
       filename: specifier,
       specifierType: dependency.specifierType,
+      range: dependency.range,
       parent: dependency.resolveFrom,
       env: dependency.env,
       sourcePath: dependency.sourcePath,

@@ -1,6 +1,6 @@
 {
   "name": "@parcel/utils",
-  "version": "2.3.2",
+  "version": "2.8.2",
   "description": "Blazing fast, zero configuration web application bundler",
   "license": "MIT",
   "publishConfig": {
@@ -33,16 +33,15 @@
     }
   },
   "dependencies": {
-    "@parcel/codeframe": "2.3.2",
-    "@parcel/diagnostic": "2.3.2",
-    "@parcel/hash": "2.3.2",
-    "@parcel/logger": "2.3.2",
-    "@parcel/markdown-ansi": "2.3.2",
-    "@parcel/source-map": "^2.0.0",
+    "@parcel/codeframe": "2.8.2",
+    "@parcel/diagnostic": "2.8.2",
+    "@parcel/hash": "2.8.2",
+    "@parcel/logger": "2.8.2",
+    "@parcel/markdown-ansi": "2.8.2",
+    "@parcel/source-map": "^2.1.1",
     "chalk": "^4.1.0"
   },
   "devDependencies": {
-    "@babel/plugin-transform-flow-strip-types": "^7.2.0",
     "@iarna/toml": "^2.2.0",
     "ansi-html-community": "0.0.8",
     "clone": "^2.1.1",

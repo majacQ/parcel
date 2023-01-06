@@ -1,6 +1,9 @@
+// @flow
 import assert from 'assert';
+import invariant from 'assert';
 import path from 'path';
 import SourceMap from '@parcel/source-map';
+import type {InitialParcelOptions} from '@parcel/types';
 import {
   bundle as _bundle,
   inputFS,
@@ -11,11 +14,11 @@ import {
   mergeParcelOptions,
 } from '@parcel/test-utils';
 import {loadSourceMapUrl} from '@parcel/utils';
+import nullthrows from 'nullthrows';
 
-const bundle = (name, opts = {}) => {
+const bundle = (name, opts?: InitialParcelOptions) => {
   return _bundle(
     name,
-    // $FlowFixMe
     mergeParcelOptions(
       {
         defaultTargetOptions: {
@@ -43,7 +46,15 @@ function checkSourceMapping({
   generatedStr = str,
   sourcePath,
   msg = '',
-}) {
+}: {|
+  map: SourceMap,
+  source: string,
+  generated: string,
+  str: string,
+  generatedStr?: string,
+  sourcePath: string,
+  msg?: string,
+|}) {
   assert(
     generated.indexOf(generatedStr) !== -1,
     "'" + generatedStr + "' not found in generated code",
@@ -90,13 +101,14 @@ function checkSourceMapping({
     mapping = map.indexedMappingToStringMapping(mappings[closestIndex]);
   }
 
-  assert(mapping, "no mapping for '" + str + "'" + msg);
+  invariant(mapping, "no mapping for '" + str + "'" + msg);
 
   let generatedDiff = {
     line: generatedPosition.line - mapping.generated.line,
     column: generatedPosition.column - mapping.generated.column,
   };
 
+  invariant(mapping.original);
   let computedSourcePosition = {
     line: mapping.original.line + generatedDiff.line,
     column: mapping.original.column + generatedDiff.column,
@@ -433,7 +445,7 @@ describe('sourcemaps', function () {
       source: inputs[0],
       generated: raw,
       str: 'const local',
-      generatedStr: 'const t',
+      generatedStr: 'const r',
       sourcePath: 'index.js',
     });
 
@@ -442,7 +454,7 @@ describe('sourcemaps', function () {
       source: inputs[0],
       generated: raw,
       str: 'local.a',
-      generatedStr: 't.a',
+      generatedStr: 'r.a',
       sourcePath: 'index.js',
     });
 
@@ -566,12 +578,11 @@ describe('sourcemaps', function () {
   it('should create a valid sourcemap when using the Typescript tsc transformer', async function () {
     let inputFilePath = path.join(
       __dirname,
-      '/integration/sourcemap-typescript-tsc/index.ts',
+      '/integration/sourcemap-typescript-tsc/src/index.ts',
     );
 
-    await bundle(inputFilePath);
-    let distDir = path.join(__dirname, '../dist/');
-    let filename = path.join(distDir, 'index.js');
+    let b = await bundle(inputFilePath);
+    let filename = b.getBundles()[0].filePath;
     let raw = await outputFS.readFile(filename, 'utf8');
     let mapUrlData = await loadSourceMapUrl(outputFS, filename, raw);
     if (!mapUrlData) {
@@ -587,8 +598,8 @@ describe('sourcemaps', function () {
     sourceMap.addVLQMap(map);
 
     let mapData = sourceMap.getMap();
-    assert.equal(mapData.sources.length, 1);
-    assert.deepEqual(mapData.sources, ['index.ts']);
+    assert.deepEqual(mapData.sources, ['src/index.ts']);
+    assert(map.sourcesContent.every(s => s));
 
     let input = await inputFS.readFile(
       path.join(path.dirname(filename), map.sourceRoot, map.sources[0]),
@@ -599,7 +610,7 @@ describe('sourcemaps', function () {
       source: input,
       generated: raw,
       str: 'nonExistsFunc',
-      sourcePath: 'index.ts',
+      sourcePath: 'src/index.ts',
     });
   });
 
@@ -610,7 +621,9 @@ describe('sourcemaps', function () {
         '/integration/sourcemap-css/style.css',
       );
 
-      await bundle(inputFilePath, {minify});
+      await bundle(inputFilePath, {
+        defaultTargetOptions: {shouldOptimize: minify},
+      });
       let distDir = path.join(__dirname, '../dist/');
       let filename = path.join(distDir, 'style.css');
       let raw = await outputFS.readFile(filename, 'utf8');
@@ -656,7 +669,9 @@ describe('sourcemaps', function () {
         '/integration/sourcemap-css-import/style.css',
       );
 
-      await bundle(inputFilePath, {minify});
+      await bundle(inputFilePath, {
+        defaultTargetOptions: {shouldOptimize: minify},
+      });
       let distDir = path.join(__dirname, '../dist/');
       let filename = path.join(distDir, 'style.css');
       let raw = await outputFS.readFile(filename, 'utf8');
@@ -673,22 +688,33 @@ describe('sourcemaps', function () {
       sourceMap.addVLQMap(map);
 
       let mapData = sourceMap.getMap();
-      assert.deepEqual(mapData.sources, [
-        'other-style.css',
-        'another-style.css',
-        'style.css',
-      ]);
+      let sources = minify
+        ? ['style.css', 'other-style.css', 'another-style.css']
+        : ['other-style.css', 'another-style.css', 'style.css'];
+      assert.deepEqual(mapData.sources, sources);
 
       let otherStyle = await inputFS.readFile(
-        path.join(path.dirname(filename), map.sourceRoot, map.sources[0]),
+        path.join(
+          path.dirname(filename),
+          map.sourceRoot,
+          map.sources[sources.indexOf('other-style.css')],
+        ),
         'utf-8',
       );
       let anotherStyle = await inputFS.readFile(
-        path.join(path.dirname(filename), map.sourceRoot, map.sources[1]),
+        path.join(
+          path.dirname(filename),
+          map.sourceRoot,
+          map.sources[sources.indexOf('another-style.css')],
+        ),
         'utf-8',
       );
       let style = await inputFS.readFile(
-        path.join(path.dirname(filename), map.sourceRoot, map.sources[2]),
+        path.join(
+          path.dirname(filename),
+          map.sourceRoot,
+          map.sources[sources.indexOf('style.css')],
+        ),
         'utf8',
       );
 
@@ -1123,7 +1149,9 @@ describe('sourcemaps', function () {
         __dirname,
         '/integration/sourcemap-css-existing/style.css',
       );
-      let b = await bundle(sourceFilename, {minify});
+      let b = await bundle(sourceFilename, {
+        defaultTargetOptions: {shouldOptimize: minify},
+      });
 
       let filename = b.getBundles()[0].filePath;
       let raw = await outputFS.readFile(filename, 'utf8');
@@ -1228,6 +1256,7 @@ describe('sourcemaps', function () {
       source: input,
       generated: raw,
       str: "console.log('foo')",
+      generatedStr: `console.log("foo")`,
       sourcePath,
     });
 
@@ -1236,6 +1265,7 @@ describe('sourcemaps', function () {
       source: input,
       generated: raw,
       str: "console.log('bar')",
+      generatedStr: `console.log("bar")`,
       sourcePath,
     });
 
@@ -1244,6 +1274,7 @@ describe('sourcemaps', function () {
       source: input,
       generated: raw,
       str: "console.log('baz')",
+      generatedStr: `console.log("baz")`,
       sourcePath,
     });
 
@@ -1252,6 +1283,7 @@ describe('sourcemaps', function () {
       source: input,
       generated: raw,
       str: "console.log('idhf')",
+      generatedStr: `console.log("idhf")`,
       sourcePath,
     });
   });
@@ -1281,7 +1313,7 @@ describe('sourcemaps', function () {
     let sourceMap = new SourceMap('/');
     sourceMap.addVLQMap(map);
     let sourcePath = 'index.js';
-    let sourceContent = sourceMap.getSourceContent(sourcePath);
+    let sourceContent = nullthrows(sourceMap.getSourceContent(sourcePath));
 
     checkSourceMapping({
       map: sourceMap,
@@ -1326,7 +1358,7 @@ describe('sourcemaps', function () {
     let sourceMap = new SourceMap('/');
     sourceMap.addVLQMap(map);
     let sourcePath = 'index.tsx';
-    let sourceContent = sourceMap.getSourceContent(sourcePath);
+    let sourceContent = nullthrows(sourceMap.getSourceContent(sourcePath));
 
     checkSourceMapping({
       map: sourceMap,
@@ -1390,8 +1422,8 @@ describe('sourcemaps', function () {
       map: sourceMap,
       source: sourceContent,
       generated: raw,
-      str: "foo = 'Lorem ipsum",
-      generatedStr: "foo = 'Lorem ipsum",
+      str: `foo = 'Lorem ipsum`,
+      generatedStr: `foo = "Lorem ipsum`,
       sourcePath,
     });
   });

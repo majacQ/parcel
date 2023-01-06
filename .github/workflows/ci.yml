@@ -2,6 +2,9 @@ on: pull_request
 
 name: Continuous Integration
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
@@ -42,7 +45,7 @@ jobs:
     name: Unit tests (${{matrix.os}}, Node ${{matrix.node}})
     strategy:
       matrix:
-        node: [12, 14]
+        node: [14, 16]
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{matrix.os}}
     steps:
@@ -64,8 +67,11 @@ jobs:
     name: Integration tests (${{matrix.os}}, Node ${{matrix.node}})
     strategy:
       matrix:
-        node: [12, 14]
+        node: [14, 16]
         os: [ubuntu-latest, macos-latest, windows-latest]
+      # These tend to be quite flakey, so one failed instance shouldn't stop
+      # others from potentially succeeding
+      fail-fast: false
     runs-on: ${{matrix.os}}
     steps:
       - uses: actions/checkout@v2
@@ -88,12 +94,13 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: Integration tests (${{matrix.os}}, node ${{matrix.node}})
-          path: '**/junit-*.xml'
+          path: "**/junit-*.xml"
 
   test_report:
     name: Test report
     runs-on: ubuntu-latest
-    needs: [unit_tests, integration_tests]
+    needs:
+      [unit_tests, integration_tests]
     if: always()
     steps:
       - name: Create test report
