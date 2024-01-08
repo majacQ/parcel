@@ -22,17 +22,21 @@ describe('css', () => {
     assertBundles(b, [
       {
         name: 'index.js',
-        assets: ['index.js', 'local.js'],
+        assets: ['index.js', 'local.js', 'c.js'],
       },
       {
         name: 'index.css',
-        assets: ['index.css', 'local.css'],
+        assets: ['index.css', 'local.css', 'c.css'],
       },
     ]);
 
     let output = await run(b);
     assert.equal(typeof output, 'function');
     assert.equal(output(), 3);
+
+    let css = await outputFS.readFile(path.join(distDir, 'index.css'), 'utf8');
+    assert.ok(css.indexOf('.c {') < css.indexOf('.local {'));
+    assert.ok(css.indexOf('.local {') < css.indexOf('.index {'));
   });
 
   it('should bundle css dependencies in the correct, postorder traversal order', async () => {
@@ -114,7 +118,9 @@ describe('css', () => {
     let css = await outputFS.readFile(path.join(distDir, '/index.css'), 'utf8');
     assert(css.includes('.local'));
     assert(css.includes('.other'));
-    assert(/@media print {\s*.other/.test(css));
+    assert(
+      /@media print {\s*\.local(.|\n)*\.other(.|\n)*}(.|\n)*\.index/.test(css),
+    );
     assert(css.includes('.index'));
   });
 
@@ -419,6 +425,7 @@ describe('css', () => {
                 code,
                 codeHighlights: [
                   {
+                    message: undefined,
                     start: {
                       line: 5,
                       column: 3,
@@ -445,6 +452,19 @@ describe('css', () => {
   it('should support importing CSS from node_modules with the npm: scheme', async () => {
     let b = await bundle(
       path.join(__dirname, '/integration/css-node-modules/index.css'),
+    );
+
+    assertBundles(b, [
+      {
+        name: 'index.css',
+        assets: ['index.css', 'foo.css'],
+      },
+    ]);
+  });
+
+  it('should support the style package exports condition', async () => {
+    let b = await bundle(
+      path.join(__dirname, '/integration/css-exports/index.css'),
     );
 
     assertBundles(b, [
@@ -491,5 +511,18 @@ describe('css', () => {
 
     let res = await outputFS.readFile(b.getBundles()[0].filePath, 'utf8');
     assert(res.includes('.foo.bar'));
+  });
+
+  it('should support @layer', async function () {
+    let b = await bundle(path.join(__dirname, '/integration/css-layer/a.css'), {
+      mode: 'production',
+    });
+
+    let res = await outputFS.readFile(b.getBundles()[0].filePath, 'utf8');
+    assert(
+      res.includes(
+        '@layer b.c{.c{color:#ff0}}@layer b{.b{color:#00f}}.a{color:red}',
+      ),
+    );
   });
 });

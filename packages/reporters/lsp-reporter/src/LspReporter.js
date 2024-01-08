@@ -1,15 +1,11 @@
 // @flow strict-local
 
 import type {Diagnostic as ParcelDiagnostic} from '@parcel/diagnostic';
-import type {
-  BundleGraph,
-  DiagnosticLogEvent,
-  FilePath,
-  PackagedBundle,
-} from '@parcel/types';
+import type {BundleGraph, FilePath, PackagedBundle} from '@parcel/types';
 import type {Program, Query} from 'ps-node';
-import type {Diagnostic, PublishDiagnostic} from './protocol';
+import type {Diagnostic, DocumentUri} from 'vscode-languageserver';
 import type {MessageConnection} from 'vscode-jsonrpc/node';
+import type {ParcelSeverity} from './utils';
 
 import {
   DefaultMap,
@@ -21,17 +17,26 @@ import path from 'path';
 import os from 'os';
 import url from 'url';
 import fs from 'fs';
+import nullthrows from 'nullthrows';
 import * as ps from 'ps-node';
 import {promisify} from 'util';
 
 import {createServer} from './ipc';
 import {
-  DiagnosticSeverity,
-  DiagnosticTag,
+  type PublishDiagnostic,
   NotificationBuildStatus,
   NotificationWorkspaceDiagnostics,
   RequestDocumentDiagnostics,
-} from './protocol';
+  RequestImporters,
+} from '@parcel/lsp-protocol';
+
+import {
+  DiagnosticSeverity,
+  DiagnosticTag,
+  normalizeFilePath,
+  parcelSeverityToLspSeverity,
+} from './utils';
+import type {FSWatcher} from 'fs';
 
 const lookupPid: Query => Program[] = promisify(ps.lookup);
 
@@ -42,8 +47,6 @@ const ignoreFail = func => {
     /**/
   }
 };
-
-type ParcelSeverity = DiagnosticLogEvent['level'];
 
 const BASEDIR = fs.realpathSync(path.join(os.tmpdir(), 'parcel-lsp'));
 const SOCKET_FILE = path.join(BASEDIR, `parcel-${process.pid}`);
@@ -65,52 +68,103 @@ let bundleGraphDeferrable =
 let bundleGraph: Promise<?BundleGraph<PackagedBundle>> =
   bundleGraphDeferrable.promise;
 
+let watchStarted = false;
+let lspStarted = false;
+let watchStartPromise;
+
+const LSP_SENTINEL_FILENAME = 'lsp-server';
+const LSP_SENTINEL_FILE = path.join(BASEDIR, LSP_SENTINEL_FILENAME);
+
+async function watchLspActive(): Promise<FSWatcher> {
+  // Check for lsp-server when reporter is first started
+  try {
+    await fs.promises.access(LSP_SENTINEL_FILE, fs.constants.F_OK);
+    lspStarted = true;
+  } catch {
+    //
+  }
+
+  return fs.watch(BASEDIR, (eventType: string, filename: string) => {
+    switch (eventType) {
+      case 'rename':
+        if (filename === LSP_SENTINEL_FILENAME) {
+          fs.access(LSP_SENTINEL_FILE, fs.constants.F_OK, err => {
+            if (err) {
+              lspStarted = false;
+            } else {
+              lspStarted = true;
+            }
+          });
+        }
+    }
+  });
+}
+
+async function doWatchStart(options) {
+  await fs.promises.mkdir(BASEDIR, {recursive: true});
+
+  // For each existing file, check if the pid matches a running process.
+  // If no process matches, delete the file, assuming it was orphaned
+  // by a process that quit unexpectedly.
+  for (let filename of fs.readdirSync(BASEDIR)) {
+    if (filename.endsWith('.json')) continue;
+    let pid = parseInt(filename.slice('parcel-'.length), 10);
+    let resultList = await lookupPid({pid});
+    if (resultList.length > 0) continue;
+    fs.unlinkSync(path.join(BASEDIR, filename));
+    ignoreFail(() => fs.unlinkSync(path.join(BASEDIR, filename + '.json')));
+  }
+
+  server = await createServer(SOCKET_FILE, connection => {
+    // console.log('got connection');
+    connections.push(connection);
+    connection.onClose(() => {
+      connections = connections.filter(c => c !== connection);
+    });
+
+    connection.onRequest(RequestDocumentDiagnostics, async uri => {
+      let graph = await bundleGraph;
+      if (!graph) return;
+
+      return getDiagnosticsUnusedExports(graph, uri);
+    });
+
+    connection.onRequest(RequestImporters, async params => {
+      let graph = await bundleGraph;
+      if (!graph) return null;
+
+      return getImporters(graph, params);
+    });
+
+    sendDiagnostics();
+  });
+  await fs.promises.writeFile(
+    META_FILE,
+    JSON.stringify({
+      projectRoot: options.projectRoot,
+      pid: process.pid,
+      argv: process.argv,
+    }),
+  );
+}
+
+watchLspActive();
+
 export default (new Reporter({
   async report({event, options}) {
+    if (event.type === 'watchStart') {
+      watchStarted = true;
+    }
+
+    if (watchStarted && lspStarted) {
+      if (!watchStartPromise) {
+        watchStartPromise = doWatchStart(options);
+      }
+      await watchStartPromise;
+    }
+
     switch (event.type) {
       case 'watchStart': {
-        await fs.promises.mkdir(BASEDIR, {recursive: true});
-
-        // For each existing file, check if the pid matches a running process.
-        // If no process matches, delete the file, assuming it was orphaned
-        // by a process that quit unexpectedly.
-        for (let filename of fs.readdirSync(BASEDIR)) {
-          if (filename.endsWith('.json')) continue;
-          let pid = parseInt(filename.slice('parcel-'.length), 10);
-          let resultList = await lookupPid({pid});
-          if (resultList.length > 0) continue;
-          fs.unlinkSync(path.join(BASEDIR, filename));
-          ignoreFail(() =>
-            fs.unlinkSync(path.join(BASEDIR, filename + '.json')),
-          );
-        }
-
-        server = await createServer(SOCKET_FILE, connection => {
-          // console.log('got connection');
-          connections.push(connection);
-          connection.onClose(() => {
-            connections = connections.filter(c => c !== connection);
-          });
-
-          connection.onRequest(RequestDocumentDiagnostics, async uri => {
-            let graph = await bundleGraph;
-            if (!graph) return;
-
-            let v = await getDiagnosticsUnusedExports(graph, uri);
-            return v;
-          });
-
-          sendDiagnostics();
-        });
-        await fs.promises.writeFile(
-          META_FILE,
-          JSON.stringify({
-            projectRoot: options.projectRoot,
-            pid: process.pid,
-            argv: process.argv,
-          }),
-        );
-
         break;
       }
 
@@ -338,23 +392,64 @@ function getDiagnosticsUnusedExports(
   return diagnostics;
 }
 
-function parcelSeverityToLspSeverity(parcelSeverity: ParcelSeverity) {
-  switch (parcelSeverity) {
-    case 'error':
-      return DiagnosticSeverity.Error;
-    case 'warn':
-      return DiagnosticSeverity.Warning;
-    case 'info':
-      return DiagnosticSeverity.Information;
-    case 'verbose':
-      return DiagnosticSeverity.Hint;
-    default:
-      throw new Error('Unknown severity');
-  }
-}
+// function getDefinition(
+//   bundleGraph: BundleGraph<PackagedBundle>,
+//   document: string,
+//   position: Position,
+// ): Array<LocationLink> | void {
+//   let filename = url.fileURLToPath(document);
 
-function normalizeFilePath(filePath: FilePath, projectRoot: FilePath) {
-  return path.isAbsolute(filePath)
-    ? filePath
-    : path.join(projectRoot, filePath);
+//   let asset = bundleGraph.traverse((node, context, actions) => {
+//     if (node.type === 'asset' && node.value.filePath === filename) {
+//       actions.stop();
+//       return node.value;
+//     }
+//   });
+
+//   if (asset) {
+//     for (let dep of bundleGraph.getDependencies(asset)) {
+//       let loc = dep.loc;
+//       if (loc && isInRange(loc, position)) {
+//         let resolution = bundleGraph.getResolvedAsset(dep);
+//         if (resolution) {
+//           return [
+//             {
+//               originSelectionRange: {
+//                 start: {
+//                   line: loc.start.line - 1,
+//                   character: loc.start.column - 1,
+//                 },
+//                 end: {line: loc.end.line - 1, character: loc.end.column},
+//               },
+//               targetUri: `file://${resolution.filePath}`,
+//               targetRange: RANGE_DUMMY,
+//               targetSelectionRange: RANGE_DUMMY,
+//             },
+//           ];
+//         }
+//       }
+//     }
+//   }
+// }
+
+function getImporters(
+  bundleGraph: BundleGraph<PackagedBundle>,
+  document: string,
+): Array<DocumentUri> | null {
+  let filename = url.fileURLToPath(document);
+
+  let asset = bundleGraph.traverse((node, context, actions) => {
+    if (node.type === 'asset' && node.value.filePath === filename) {
+      actions.stop();
+      return node.value;
+    }
+  });
+
+  if (asset) {
+    let incoming = bundleGraph.getIncomingDependencies(asset);
+    return incoming
+      .filter(dep => dep.sourcePath != null)
+      .map(dep => `file://${nullthrows(dep.sourcePath)}`);
+  }
+  return null;
 }
